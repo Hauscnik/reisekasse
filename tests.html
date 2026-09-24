@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reisekasse Tests</title>
+<style>body{font:15px/1.5 system-ui,sans-serif;margin:16px;background:#fff;color:#111}.ok{color:#0a6}.bad{color:#c22;font-weight:700}</style>
+</head>
+<body>
+<h1>Tests: Zusammenführen und Tabelle</h1>
+<ul id="out"></ul>
+<p id="sum"></p>
+<script src="sync.js"></script>
+<script src="csv.js"></script>
+<script>
+const out=document.getElementById('out'); let pass=0, fail=0;
+function test(name,fn){
+  try{fn();pass++;out.insertAdjacentHTML('beforeend',`<li class="ok">✓ ${name}</li>`)}
+  catch(e){fail++;out.insertAdjacentHTML('beforeend',`<li class="bad">✗ ${name}: ${e.message}</li>`)}
+}
+function eq(a,b,msg){const x=JSON.stringify(a),y=JSON.stringify(b);if(x!==y)throw new Error((msg||'ungleich')+`\n  ist:  ${x}\n  soll: ${y}`)}
+const clone=o=>JSON.parse(JSON.stringify(o));
+
+function baseTrip(){
+  return RK.normalizeTrip({id:'t1',name:'Kenia',start:'2026-10-01',end:'2026-10-14',budget:4000,joint:{on:true,name:'Konto'},deleted:false,created:1,updated:1,lastCur:'EUR',
+    people:[{id:'a',name:'Anna',updated:1},{id:'b',name:'Ben',updated:1}],
+    cats:[{id:'c1',emoji:'🛏',name:'Unterkunft',budget:0,hidden:false,nights:true,updated:1},{id:'c2',emoji:'🍽',name:'Essen',budget:0,hidden:false,nights:false,updated:1}],
+    currencies:[{code:'KES',rate:150,rateDate:'2026-09-24',updated:1}],expenses:[]});
+}
+const ex=(id,amount,updated,extra={})=>({id,date:'2026-10-02',amount,cur:'KES',rate:150,cat:'c2',payer:'J',for:['a','b'],shared:true,method:'card',note:'',created:updated,updated,...extra});
+const state=trips=>({v:1,active:trips[0]&&trips[0].id,trips,lastBackup:null});
+const file=S=>RK.parseFile(RK.makeFile(S.trips,'trip'));
+const live=t=>t.expenses.filter(e=>!e.deleted).map(e=>e.id).sort();
+/* Abgleich wie im Plan: A liest B ein, danach liest B die Datei von A ein */
+function sync(A,B){RK.mergeState(A,file(B));RK.mergeState(B,file(A))}
+/* Vergleich ohne lokale Einstellung und ohne Reihenfolge (die App sortiert Ausgaben nach Datum) */
+const byKey=k=>(a,b)=>a[k]<b[k]?-1:a[k]>b[k]?1:0;
+const strip=S=>S.trips.map(t=>{const x=clone(t);delete x.lastCur;x.expenses.sort(byKey('id'));x.people.sort(byKey('id'));x.cats.sort(byKey('id'));x.currencies.sort(byKey('code'));return x}).sort(byKey('id'));
+
+test('Neue Ausgaben beider Seiten landen bei beiden',()=>{
+  const A=state([baseTrip()]), B=clone(A);
+  A.trips[0].expenses.push(ex('e1',1000,10));
+  B.trips[0].expenses.push(ex('e2',2000,11));
+  sync(A,B);
+  eq(live(A.trips[0]),['e1','e2']); eq(strip(A),strip(B),'Beide Geräte gleich');
+});
+test('Statistik zählt neue Ausgaben',()=>{
+  const A=state([baseTrip()]), B=clone(A);
+  B.trips[0].expenses.push(ex('e1',1000,10),ex('e2',1,11));
+  const r=RK.mergeState(A,file(B));
+  eq([r[0].added,r[0].changed,r[0].deleted,r[0].settings],[2,0,0,false]);
+});
+test('Gleiche Datei zweimal einlesen ändert nichts',()=>{
+  const A=state([baseTrip()]), B=clone(A);
+  B.trips[0].expenses.push(ex('e1',1000,10));
+  RK.mergeState(A,file(B)); const r=RK.mergeState(A,file(B));
+  eq([r[0].added,r[0].changed,r[0].deleted,r[0].settings],[0,0,0,false]);
+});
+test('Bei Änderungen am selben Eintrag gewinnt die neuere',()=>{
+  const t=baseTrip(); t.expenses.push(ex('e1',1000,10));
+  const A=state([t]), B=clone(A);
+  Object.assign(A.trips[0].expenses[0],{amount:1111,updated:20});
+  Object.assign(B.trips[0].expenses[0],{amount:2222,updated:30});
+  sync(A,B);
+  eq(A.trips[0].expenses[0].amount,2222); eq(strip(A),strip(B));
+});
+test('Die neuere Änderung gewinnt auch in umgekehrter Richtung',()=>{
+  const t=baseTrip(); t.expenses.push(ex('e1',1000,10));
+  const A=state([t]), B=clone(A);
+  Object.assign(A.trips[0].expenses[0],{amount:1111,updated:40});
+  Object.assign(B.trips[0].expenses[0],{amount:2222,updated:30});
+  sync(A,B);
+  eq(B.trips[0].expenses[0].amount,1111); eq(strip(A),strip(B));
+});
+test('Gleicher Zeitstempel: beide Geräte kommen zum selben Ergebnis',()=>{
+  const t=baseTrip(); t.expenses.push(ex('e1',1000,10));
+  const A=state([t]), B=clone(A);
+  Object.assign(A.trips[0].expenses[0],{amount:1111,updated:50});
+  Object.assign(B.trips[0].expenses[0],{amount:2222,updated:50});
+  sync(A,B); eq(strip(A),strip(B));
+});
+test('Gelöschte Einträge tauchen nicht wieder auf',()=>{
+  const t=baseTrip(); t.expenses.push(ex('e1',1000,10),ex('e2',500,10));
+  const A=state([t]), B=clone(A), oldB=clone(B);
+  Object.assign(A.trips[0].expenses[0],{deleted:true,updated:20});
+  sync(A,B);
+  eq(live(B.trips[0]),['e2']);
+  RK.mergeState(A,file(oldB));
+  eq(live(A.trips[0]),['e2'],'Alte Datei bringt den Eintrag nicht zurück');
+});
+test('Löschung wird als gelöscht gezählt',()=>{
+  const t=baseTrip(); t.expenses.push(ex('e1',1000,10));
+  const A=state([t]), B=clone(A);
+  Object.assign(A.trips[0].expenses[0],{deleted:true,updated:20});
+  eq(RK.mergeState(B,file(A))[0].deleted,1);
+});
+test('Später bearbeitet schlägt früher gelöscht',()=>{
+  const t=baseTrip(); t.expenses.push(ex('e1',1000,10));
+  const A=state([t]), B=clone(A);
+  Object.assign(A.trips[0].expenses[0],{deleted:true,updated:20});
+  Object.assign(B.trips[0].expenses[0],{amount:3000,updated:30});
+  sync(A,B);
+  eq(live(A.trips[0]),['e1']); eq(A.trips[0].expenses[0].amount,3000); eq(strip(A),strip(B));
+});
+test('Rückgängig nach Löschen übersteht den Abgleich',()=>{
+  const t=baseTrip(); t.expenses.push(ex('e1',1000,10));
+  const A=state([t]), B=clone(A);
+  Object.assign(A.trips[0].expenses[0],{deleted:true,updated:20});
+  sync(A,B);
+  Object.assign(A.trips[0].expenses[0],{deleted:false,updated:30});
+  sync(A,B);
+  eq(live(B.trips[0]),['e1']);
+});
+test('Person, die anderswo noch verwendet wird, bleibt erhalten',()=>{
+  const A=state([baseTrip()]), B=clone(A);
+  Object.assign(A.trips[0].people[1],{deleted:true,updated:20});
+  B.trips[0].expenses.push(ex('e1',1000,15,{payer:'b',for:['a','b']}));
+  sync(A,B);
+  eq(A.trips[0].people[1].deleted,false); eq(strip(A),strip(B));
+});
+test('Kategorie umbenannt: neuere Fassung gewinnt',()=>{
+  const A=state([baseTrip()]), B=clone(A);
+  Object.assign(A.trips[0].cats[1],{name:'Essen & Trinken',updated:20});
+  const r=RK.mergeState(B,file(A));
+  eq(B.trips[0].cats[1].name,'Essen & Trinken'); eq(r[0].settings,true);
+});
+test('Neue Person auf B wird übernommen, „für alle“ bleibt festgeschrieben',()=>{
+  const t=baseTrip(); t.expenses.push(ex('e1',1000,10));
+  const A=state([t]), B=clone(A);
+  B.trips[0].people.push({id:'c',name:'Cleo',updated:20});
+  sync(A,B);
+  eq(A.trips[0].people.map(p=>p.id),['a','b','c']); eq(A.trips[0].expenses[0].for,['a','b']); eq(A.trips[0].expenses[0].shared,true);
+});
+test('Reisedaten: neuere Fassung gewinnt, lastCur bleibt lokal',()=>{
+  const A=state([baseTrip()]), B=clone(A);
+  Object.assign(A.trips[0],{name:'Kenia 2026',budget:4500,updated:20});
+  B.trips[0].lastCur='KES';
+  RK.mergeState(B,file(A));
+  eq([B.trips[0].name,B.trips[0].budget,B.trips[0].lastCur],['Kenia 2026',4500,'KES']);
+});
+test('Gelöschte Reise bleibt gelöscht, wenn B nichts Neues hat',()=>{
+  const t=baseTrip(); t.expenses.push(ex('e1',1000,10));
+  const A=state([t]), B=clone(A);
+  Object.assign(A.trips[0],{deleted:true,updated:20});
+  const r=RK.mergeState(B,file(A));
+  eq(B.trips[0].deleted,true); eq(r[0].removed,true);
+  RK.mergeState(A,file(B)); eq(A.trips[0].deleted,true);
+});
+test('Gelöschte Reise lebt wieder auf, wenn B danach noch erfasst hat',()=>{
+  const A=state([baseTrip()]), B=clone(A);
+  Object.assign(A.trips[0],{deleted:true,updated:20});
+  B.trips[0].expenses.push(ex('e1',1000,30));
+  sync(A,B);
+  eq(A.trips[0].deleted,false); eq(live(A.trips[0]),['e1']); eq(strip(A),strip(B));
+});
+test('Unbekannte Reise wird neu übernommen (Reise teilen)',()=>{
+  const A=state([baseTrip()]), B=state([]);
+  const r=RK.mergeState(B,file(A));
+  eq(r[0].isNew,true); eq(B.trips.length,1); eq(B.trips[0].id,'t1');
+});
+test('Wiederherstellen einer Sicherung auf leerem Gerät',()=>{
+  const t=baseTrip(); t.expenses.push(ex('e1',1000,10),ex('e2',1,11,{deleted:true}));
+  const t2=baseTrip(); t2.id='t2'; t2.name='Alt';
+  const A=state([t,t2]), E=state([]);
+  RK.mergeState(E,RK.parseFile(RK.makeFile(A.trips,'backup')));
+  eq(strip(E),strip(A));
+});
+test('Keine Reisekasse-Datei wird abgelehnt',()=>{
+  let m=''; try{RK.parseFile('{"foo":1}')}catch(e){m=e.message}
+  eq(m,'Das ist keine Datei der Reisekasse.');
+  m=''; try{RK.parseFile('kein json')}catch(e){m=e.message}
+  eq(m,'Das ist keine Datei der Reisekasse.');
+});
+test('Datei aus neuerer Version wird abgelehnt',()=>{
+  let m=''; try{RK.parseFile(JSON.stringify({app:'reisekasse',format:99,trips:[]}))}catch(e){m=e.message}
+  eq(m.startsWith('Die Datei stammt aus einer neueren Version'),true);
+});
+test('Beschädigte Ausgabe wird erkannt',()=>{
+  const t=baseTrip(); t.expenses.push(ex('e1','zehn',10));
+  let m=''; try{RK.parseFile(RK.makeFile([t],'trip'))}catch(e){m=e.message}
+  eq(m,'Die Datei ist beschädigt oder unvollständig.');
+});
+test('Datei mit BOM (z. B. nach Bearbeitung unter Windows) wird gelesen',()=>{
+  eq(RK.parseFile('﻿'+RK.makeFile([baseTrip()],'trip')).trips.length,1);
+});
+
+
+/* ---------- Tabelle (CSV) ---------- */
+let seq=0;
+const env={uid:()=>'n'+(++seq),now:()=>100};
+function csvTrip(){
+  const t=baseTrip();
+  t.expenses.push(ex('e1',3900,10,{note:'Abendessen; mit Blick'}),ex('e2',420,11,{cur:'EUR',rate:1,cat:'c1',nights:3}),ex('e3',2400,12,{payer:'a',for:['b'],shared:false,method:'cash',note:'Kette "Mama"'}));
+  return t;
+}
+/* Zellen einer Zeile ändern, wie man es in Excel tun würde */
+function edit(csv,rowIdx,col,val){
+  const rows=RKCSV.parse(csv), c=rows[0].indexOf(col);
+  if(rowIdx>=rows.length)rows.push(rows[0].map(()=>''));
+  rows[rowIdx][c]=val;
+  return rows.map(r=>r.map(x=>/[";\n]/.test(x)?'"'+x.replace(/"/g,'""')+'"':x).join(';')).join('\r\n');
+}
+test('CSV: Export und unverändertes Einlesen ändert nichts',()=>{
+  const t=csvTrip(), before=JSON.stringify(t);
+  const r=RKCSV.apply(t,RKCSV.exportTrip(t),env);
+  eq(r.errors,[]); eq([r.stats.same,r.stats.changed,r.stats.added],[3,0,0]); eq(JSON.stringify(t),before,'Reise unverändert');
+});
+test('CSV: Export hat deutsches Format',()=>{
+  const lines=RKCSV.exportTrip(csvTrip()).replace(/^﻿/,'').split('\r\n');
+  eq(lines[0],'ID;Datum;Betrag;Währung;Kurs (1 € =);Betrag in €;Kategorie;Betreff;Bezahlt von;Für;Zahlungsart;Nächte;Löschen');
+  eq(lines[1],'e1;02.10.2026;3900;KES;150;26,00;Essen;"Abendessen; mit Blick";Konto;alle;Karte;;');
+  eq(lines[3].includes('Anna;Ben;Bar'),true);
+});
+test('CSV: geänderter Betrag wird übernommen und als neuer markiert',()=>{
+  const t=csvTrip();
+  const r=RKCSV.apply(t,edit(RKCSV.exportTrip(t),1,'Betrag','4100,50'),env);
+  eq([r.stats.changed,r.stats.same],[1,2]); eq(t.expenses[0].amount,4100.5); eq(t.expenses[0].updated,100); eq(t.expenses[1].updated,11);
+});
+test('CSV: „x“ in Löschen löscht den Eintrag',()=>{
+  const t=csvTrip();
+  const r=RKCSV.apply(t,edit(RKCSV.exportTrip(t),2,'Löschen','x'),env);
+  eq(r.stats.deleted,1); eq(t.expenses[1].deleted,true);
+});
+test('CSV: neue Zeile ohne ID kommt dazu, doppeltes Einlesen legt sie nicht zweimal an',()=>{
+  const t=csvTrip();
+  let csv=RKCSV.exportTrip(t);
+  csv=edit(csv,4,'Datum','3.10.2026');csv=edit(csv,4,'Betrag','1.500');csv=edit(csv,4,'Währung','KES');csv=edit(csv,4,'Kategorie','Essen');csv=edit(csv,4,'Betreff','Mittag');
+  const r1=RKCSV.apply(t,csv,env), r2=RKCSV.apply(t,csv,env);
+  eq(r1.stats.added,1); eq(r2.stats.duplicate,1);
+  const e=t.expenses.find(x=>x.note==='Mittag');
+  eq([e.date,e.amount,e.rate,e.payer,e.shared,e.for],['2026-10-03',1500,150,'J',true,['a','b']]);
+});
+test('CSV: Unbekannte Kategorie, Person und Währung werden angelegt',()=>{
+  const t=csvTrip();
+  let csv=RKCSV.exportTrip(t);
+  [['Datum','04.10.2026'],['Betrag','50'],['Währung','TZS'],['Kurs (1 € =)','2900'],['Kategorie','Safari'],['Bezahlt von','Cleo'],['Für','Cleo, Anna']].forEach(([c,v])=>csv=edit(csv,4,c,v));
+  const r=RKCSV.apply(t,csv,env);
+  eq(r.made,{cats:['Safari'],people:['Cleo'],currencies:['TZS']});
+  const e=t.expenses[t.expenses.length-1];
+  eq([e.shared,e.for.length,e.rate],[false,2,2900]);
+});
+test('CSV: Fehlerhafte Zeile – nichts wird übernommen',()=>{
+  const t=csvTrip(), before=JSON.stringify(t);
+  let csv=edit(RKCSV.exportTrip(t),1,'Betrag','4100');
+  csv=edit(csv,2,'Datum','31.02.2026');
+  const r=RKCSV.apply(t,csv,env);
+  eq(r.errors.length,1); eq(r.errors[0].startsWith('Zeile 3: Datum'),true); eq(JSON.stringify(t),before);
+});
+test('CSV: In der App gelöschte Ausgabe taucht nicht wieder auf',()=>{
+  const t=csvTrip(), csv=RKCSV.exportTrip(t);
+  Object.assign(t.expenses[0],{deleted:true,updated:50});
+  const r=RKCSV.apply(t,csv,env);
+  eq(r.stats.skipped,1); eq(t.expenses[0].deleted,true);
+});
+test('CSV: „für alle“ bleibt beim Wiedereinlesen festgeschrieben',()=>{
+  const t=csvTrip(); t.people.push({id:'c',name:'Cleo',updated:20});
+  const r=RKCSV.apply(t,edit(RKCSV.exportTrip(t),1,'Betrag','4000'),env);
+  eq(r.stats.changed,1); eq(t.expenses[0].for,['a','b']);
+});
+test('CSV: Einlesen in eine leere Reise baut alles auf',()=>{
+  const csv=RKCSV.exportTrip(csvTrip());
+  const t=RK.normalizeTrip({id:'x',name:'Neu',start:'2026-01-01',end:'2026-01-01',budget:0,joint:{on:true,name:'Gemeinschaftskonto'},people:[],cats:[],currencies:[],expenses:[]});
+  const r=RKCSV.apply(t,csv.replace(/;Konto;/g,';Gemeinschaftskonto;'),env);
+  eq(r.stats.added,3); eq(t.people.map(p=>p.name),['Anna','Ben']); eq(t.expenses[0].payer,'J');
+  eq(t.cats.find(c=>c.name==='Unterkunft').nights,true); eq(t.expenses.find(e=>e.amount===420).nights,3);
+});
+test('CSV: Datei mit Komma als Trennzeichen und Punkt-Dezimal (englisches Excel)',()=>{
+  const t=csvTrip();
+  const csv='ID,Date,x\r\n';
+  eq(RKCSV.apply(t,csv,env).errors[0].startsWith('Das ist keine Tabelle'),true);
+  const r=RKCSV.apply(t,'Datum,Betrag,Kategorie,Währung\r\n2026-10-05,"12,5",Essen,EUR\r\n',env);
+  eq(r.stats.added,1); eq(t.expenses[t.expenses.length-1].amount,12.5);
+});
+
+document.getElementById('sum').innerHTML=`<b class="${fail?'bad':'ok'}">${pass} bestanden, ${fail} fehlgeschlagen</b>`;
+document.title=(fail?'FAIL ':'PASS ')+pass+'/'+(pass+fail);
+</script>
+</body>
+</html>
