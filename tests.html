@@ -207,8 +207,8 @@ test('CSV: Export und unverändertes Einlesen ändert nichts',()=>{
 });
 test('CSV: Export hat deutsches Format',()=>{
   const lines=RKCSV.exportTrip(csvTrip()).replace(/^﻿/,'').split('\r\n');
-  eq(lines[0],'ID;Datum;Betrag;Währung;Kurs (1 € =);Betrag in €;Kategorie;Betreff;Bezahlt von;Für;Zahlungsart;Nächte;Löschen');
-  eq(lines[1],'e1;02.10.2026;3900;KES;150;26,00;Essen;"Abendessen; mit Blick";Konto;alle;Karte;;');
+  eq(lines[0],'ID;Datum;Betrag;Währung;Kurs (1 € =);Betrag in €;Kategorie;Betreff;Bezahlt von;Für;Zahlungsart;Nächte;Tagesbudget;Löschen');
+  eq(lines[1],'e1;02.10.2026;3900;KES;150;26,00;Essen;"Abendessen; mit Blick";Konto;alle;Karte;;ja;');
   eq(lines[3].includes('Anna;Ben;Bar'),true);
 });
 test('CSV: geänderter Betrag wird übernommen und als neuer markiert',()=>{
@@ -270,6 +270,28 @@ test('CSV: Datei mit Komma als Trennzeichen und Punkt-Dezimal (englisches Excel)
   eq(RKCSV.apply(t,csv,env).errors[0].startsWith('Das ist keine Tabelle'),true);
   const r=RKCSV.apply(t,'Datum,Betrag,Kategorie,Währung\r\n2026-10-05,"12,5",Essen,EUR\r\n',env);
   eq(r.stats.added,1); eq(t.expenses[t.expenses.length-1].amount,12.5);
+});
+
+test('CSV: Tagesbudget „nein“ rechnet eine Ausgabe heraus, „ja“ hebt es wieder auf',()=>{
+  const t=csvTrip();
+  let r=RKCSV.apply(t,edit(RKCSV.exportTrip(t),1,'Tagesbudget','nein'),env);
+  eq(r.stats.changed,1); eq(t.expenses[0].excl,true);
+  r=RKCSV.apply(t,RKCSV.exportTrip(t),env); eq(r.stats.same,3,'Wiedereinlesen stabil');
+  r=RKCSV.apply(t,edit(RKCSV.exportTrip(t),1,'Tagesbudget','ja'),env);
+  eq(r.stats.changed,1); eq('excl' in t.expenses[0],false,'folgt wieder der Kategorie');
+});
+test('CSV: herausgerechnete Kategorie – Ausgaben folgen ihr ohne eigene Einstellung',()=>{
+  const t=csvTrip(); t.cats[1].excl=true;
+  const lines=RKCSV.exportTrip(t).split('\r\n');
+  eq(lines[1].endsWith(';nein;'),true);
+  const r=RKCSV.apply(t,RKCSV.exportTrip(t),env);
+  eq(r.stats.same,3); eq('excl' in t.expenses[0],false);
+});
+test('CSV: ältere Tabelle ohne Spalte Tagesbudget behält die Einstellung',()=>{
+  const t=csvTrip(); t.expenses[0].excl=true;
+  const old=RKCSV.parse(RKCSV.exportTrip(t)).map(r=>r.filter((_,i)=>i!==12).map(x=>/[";\n]/.test(x)?'"'+x.replace(/"/g,'""')+'"':x).join(';')).join('\r\n');
+  const r=RKCSV.apply(t,old,env);
+  eq(r.stats.same,3); eq(t.expenses[0].excl,true);
 });
 
 document.getElementById('sum').innerHTML=`<b class="${fail?'bad':'ok'}">${pass} bestanden, ${fail} fehlgeschlagen</b>`;

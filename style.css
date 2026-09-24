@@ -126,7 +126,9 @@ section.block h2{font-size:1.05rem;margin:0 0 10px;font-weight:700}
 .field label{font-size:.85rem;color:var(--muted)}
 .field input,.field select{border:1px solid var(--line);background:var(--bg);border-radius:10px;padding:10px 12px;width:100%}
 .two{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-.catedit{display:grid;grid-template-columns:40px 1fr 66px 36px 36px;gap:5px;align-items:center;padding:6px 0}
+.catedit{display:grid;grid-template-columns:40px 1fr 84px 36px;gap:6px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line)}
+.catedit .catopts{grid-column:1/-1}
+.catedit .catopts button{font-size:.82rem;padding:5px 10px}
 .catedit input{border:1px solid var(--line);background:var(--bg);border-radius:8px;padding:8px;width:100%;min-width:0}
 .catedit input.emo{text-align:center}
 .catedit.hidden input{opacity:.45}

@@ -3,9 +3,9 @@
    Zeilen, die in der Datei fehlen, bleiben in der App erhalten. */
 (function(root){
 'use strict';
-const COLS=['ID','Datum','Betrag','Währung','Kurs (1 € =)','Betrag in €','Kategorie','Betreff','Bezahlt von','Für','Zahlungsart','Nächte','Löschen'];
+const COLS=['ID','Datum','Betrag','Währung','Kurs (1 € =)','Betrag in €','Kategorie','Betreff','Bezahlt von','Für','Zahlungsart','Nächte','Tagesbudget','Löschen'];
 const ALIAS={id:['id'],date:['datum'],amount:['betrag'],cur:['währung','waehrung'],rate:['kurs (1 € =)','kurs'],
-  cat:['kategorie'],note:['betreff'],payer:['bezahlt von'],for:['für','fuer'],method:['zahlungsart'],nights:['nächte','naechte'],del:['löschen','loeschen']};
+  cat:['kategorie'],note:['betreff'],payer:['bezahlt von'],for:['für','fuer'],method:['zahlungsart'],nights:['nächte','naechte'],daily:['tagesbudget'],del:['löschen','loeschen']};
 const pad=n=>String(n).padStart(2,'0');
 const lc=s=>String(s??'').trim().toLowerCase();
 const dec=v=>String(v).replace('.',',');
@@ -19,11 +19,12 @@ function exportTrip(t){
   const live=a=>a.filter(x=>!x.deleted);
   const pName=id=>id==='J'?t.joint.name:((t.people.find(p=>p.id===id)||{}).name||'');
   const cName=id=>(t.cats.find(c=>c.id===id)||{}).name||'';
+  const excl=e=>e.excl!==undefined?!!e.excl:!!(t.cats.find(c=>c.id===e.cat)||{}).excl;
   const rows=live(t.expenses).slice().sort((a,b)=>a.date.localeCompare(b.date)||(a.created||0)-(b.created||0)).map(e=>{
     const [y,m,d]=e.date.split('-');
     const eurV=e.cur==='EUR'?e.amount:e.amount/e.rate;
     return [e.id,`${d}.${m}.${y}`,dec(e.amount),e.cur,e.cur==='EUR'?'':dec(e.rate),eurV.toFixed(2).replace('.',','),cName(e.cat),e.note||'',
-      pName(e.payer),e.shared?'alle':e.for.map(pName).join(', '),e.method==='cash'?'Bar':'Karte',e.nights>0?e.nights:'',''];
+      pName(e.payer),e.shared?'alle':e.for.map(pName).join(', '),e.method==='cash'?'Bar':'Karte',e.nights>0?e.nights:'',e.shared?(excl(e)?'nein':'ja'):'',''];
   });
   /* BOM, damit Excel Umlaute richtig liest; Semikolon und Dezimalkomma wie im deutschen Excel */
   return '﻿'+[COLS,...rows].map(r=>r.map(cell).join(';')).join('\r\n')+'\r\n';
@@ -111,9 +112,16 @@ function apply(t,text,env){
     if(!cat)return err('Kategorie fehlt.');
     const nRaw=get(r,'nights'), nights=nRaw?parseInt(nRaw,10):0;
     if(nRaw&&!(nights>=1&&nights<=365&&String(nights)===nRaw))return err(`Nächte „${nRaw}“ ist keine ganze Zahl.`);
+    const dRaw=get(r,'daily');
+    let excl;
+    if(idx.daily<0)excl='keep';
+    else if(!dRaw)excl=undefined;
+    else if(/^(nein|n|no|0|heraus)/i.test(dRaw))excl=true;
+    else if(/^(ja|j|yes|1|ein)/i.test(dRaw))excl=false;
+    else return err(`Tagesbudget „${dRaw}“: bitte „ja“ oder „nein“ eintragen.`);
     const forRaw=get(r,'for');
     items.push({line,id,date,amount,cur,rate,cat,note:get(r,'note'),payer:get(r,'payer'),
-      all:!forRaw||/^(alle|für alle)$/i.test(forRaw),forNames:names(forRaw),cash:/^bar/i.test(get(r,'method')),nights});
+      all:!forRaw||/^(alle|für alle)$/i.test(forRaw),forNames:names(forRaw),cash:/^bar/i.test(get(r,'method')),nights,excl});
   });
   if(errors.length)return {errors};
 
@@ -147,7 +155,7 @@ function apply(t,text,env){
   items.forEach(it=>{if(!it.del){if(it.payer&&!isJointName(t,it.payer))findPerson(it.payer);it.forNames.forEach(n=>{if(!it.all&&!isJointName(t,n))findPerson(n)})}});
   const allIds=()=>t.people.filter(p=>!p.deleted).map(p=>p.id);
   const norm=(o,k)=>k==='note'?(o.note||''):(o[k]??null);
-  const sameExp=(a,b)=>['date','amount','cur','rate','cat','payer','shared','method','note','nights'].every(k=>norm(a,k)===norm(b,k))&&JSON.stringify(a.for)===JSON.stringify(b.for);
+  const sameExp=(a,b)=>['date','amount','cur','rate','cat','payer','shared','method','note','nights','excl'].every(k=>norm(a,k)===norm(b,k))&&JSON.stringify(a.for)===JSON.stringify(b.for);
 
   items.forEach((it,n)=>{
     const old=it.id?byId.get(it.id):null;
@@ -161,15 +169,19 @@ function apply(t,text,env){
     const rec={date:it.date,amount:it.amount,cur:it.cur,rate:it.cur==='EUR'?1:it.rate,cat:c.id,payer:payerId(it.payer),
       for:it.all?(old&&old.shared?old.for.slice():allIds()):it.forNames.filter(x=>!isJointName(t,x)).map(findPerson),
       shared:it.all,method:it.cash?'cash':'card',note:it.note,nights:c.nights&&it.nights>0?it.nights:(c.nights?1:undefined)};
+    /* Tagesbudget: eigene Einstellung nur, wenn sie von der Kategorie abweicht */
+    const wantEx=it.excl==='keep'?(old?old.excl:undefined):it.excl;
+    rec.excl=wantEx===undefined||!!wantEx===!!c.excl?undefined:!!wantEx;
     if(!rec.for.length){rec.for=allIds();rec.shared=true}
     if(old){
       if(sameExp(old,rec)){st.same++;return}
-      Object.assign(old,rec,{updated:ts});if(rec.nights===undefined)delete old.nights;st.changed++;return;
+      Object.assign(old,rec,{updated:ts});if(rec.nights===undefined)delete old.nights;if(rec.excl===undefined)delete old.excl;st.changed++;return;
     }
     const dup=t.expenses.find(e=>!e.deleted&&e.date===rec.date&&e.amount===rec.amount&&e.cur===rec.cur&&e.cat===rec.cat&&e.note===rec.note&&e.payer===rec.payer);
     if(dup){st.duplicate++;return}
     const e={id:it.id&&!byId.has(it.id)?it.id:env.uid(),...rec,created:ts+n,updated:ts};
     if(e.nights===undefined)delete e.nights;
+    if(e.excl===undefined)delete e.excl;
     t.expenses.push(e);byId.set(e.id,e);st.added++;
   });
   return {errors:[],stats:st,made};
