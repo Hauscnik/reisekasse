@@ -1,8 +1,8 @@
 /* Reisekasse – Offline-Funktion.
    Bei jeder Änderung an einer App-Datei VERSION erhöhen, sonst bekommen die Handys das Update nicht. */
-const VERSION='1.2.1';
+const VERSION='1.3.0';
 const CACHE='reisekasse-'+VERSION;
-const FILES=['./','index.html','style.css','app.js','sync.js','csv.js','manifest.webmanifest',
+const FILES=['./','index.html','style.css','app.js','sync.js','calc.js','csv.js','manifest.webmanifest',
   'fonts/figtree-latin-wght-normal.woff2',
   'icons/icon-192.png','icons/icon-512.png','icons/maskable-512.png','icons/apple-touch-icon.png','icons/favicon-32.png'];
 

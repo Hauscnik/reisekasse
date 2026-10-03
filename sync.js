@@ -5,7 +5,7 @@
 (function(root){
 'use strict';
 const APP='reisekasse', FORMAT=1;
-const META=['name','start','end','budget','joint','deleted','created','updated'];
+const META=['name','start','end','budget','budgetFor','joint','deleted','created','updated'];
 const LISTS=[['people','id'],['cats','id'],['currencies','code'],['expenses','id']];
 const DATE=/^\d{4}-\d{2}-\d{2}$/;
 const clone=o=>JSON.parse(JSON.stringify(o));
@@ -90,10 +90,13 @@ function mergeState(S,data){
 /* Ergänzt fehlende Felder, z. B. bei Dateien älterer Versionen. */
 function normalizeTrip(t){
   LISTS.forEach(([k])=>{if(!Array.isArray(t[k]))t[k]=[]});
+  const ids=t.people.filter(p=>!p.deleted).map(p=>p.id);
   if(!t.joint)t.joint={on:true,name:'Gemeinschaftskonto'};
+  /* Inhaber der gemeinsamen Kasse: bei älteren Dateien alle Personen */
+  if(!Array.isArray(t.joint.members))t.joint={...t.joint,members:ids.slice()};
+  if(!t.budgetFor)t.budgetFor='joint';
   if(!t.lastCur)t.lastCur='EUR';
   if(t.budget==null)t.budget=0;
-  const ids=t.people.filter(p=>!p.deleted).map(p=>p.id);
   t.expenses.forEach(e=>{
     if(e.shared===undefined)e.shared=!e.for||ids.every(id=>e.for.includes(id));
     if(!e.for||!e.for.length)e.for=ids.slice();

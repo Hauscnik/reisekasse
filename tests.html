@@ -7,10 +7,11 @@
 <style>body{font:15px/1.5 system-ui,sans-serif;margin:16px;background:#fff;color:#111}.ok{color:#0a6}.bad{color:#c22;font-weight:700}</style>
 </head>
 <body>
-<h1>Tests: Zusammenführen und Tabelle</h1>
+<h1>Tests: Zusammenführen, Tabelle und Rechnen</h1>
 <ul id="out"></ul>
 <p id="sum"></p>
 <script src="sync.js"></script>
+<script src="calc.js"></script>
 <script src="csv.js"></script>
 <script>
 const out=document.getElementById('out'); let pass=0, fail=0;
@@ -292,6 +293,75 @@ test('CSV: ältere Tabelle ohne Spalte Tagesbudget behält die Einstellung',()=>
   const old=RKCSV.parse(RKCSV.exportTrip(t)).map(r=>r.filter((_,i)=>i!==12).map(x=>/[";\n]/.test(x)?'"'+x.replace(/"/g,'""')+'"':x).join(';')).join('\r\n');
   const r=RKCSV.apply(t,old,env);
   eq(r.stats.same,3); eq(t.expenses[0].excl,true);
+});
+
+/* ---------- Kontoinhaber und Budget-Sichten (calc.js) ---------- */
+/* a, b, c reisen; a und b sind Inhaber der gemeinsamen Kasse */
+function holderTrip(){
+  const t=baseTrip();
+  t.people.push({id:'c',name:'Cleo',updated:1});
+  t.joint={...t.joint,members:['a','b']};
+  const e=(id,amount,f,extra={})=>ex(id,amount,10,{cur:'EUR',rate:1,for:f,shared:f.length===3,...extra});
+  t.expenses.push(e('dinner',90,['a','b','c']),e('room',120,['a','b']),e('taxi',30,['c']),e('souvenir',15,['b']));
+  return t;
+}
+const rnd=v=>Math.round(v*100)/100;
+const vals=(t,mode)=>t.expenses.map(e=>rnd(RKCALC.value(t,e,mode)));
+const tr=t=>RKCALC.settlement(t).map(x=>[x.from,x.to,rnd(x.v)]);
+const only=(t,ids)=>{t.expenses=t.expenses.filter(e=>ids.includes(e.id));return t};
+
+test('Sichten: Inhaber a & b, Gruppe a, b, c',()=>{
+  const t=holderTrip();
+  eq(RKCALC.members(t),['a','b']); eq(RKCALC.viewsDiffer(t),true); eq(RKCALC.budgetMode(t),'joint');
+  t.budgetFor='group'; eq(RKCALC.budgetMode(t),'group');
+});
+test('Wert in der Sicht: Abendessen, Doppelzimmer, Taxi, Souvenir',()=>{
+  const t=holderTrip();
+  eq(vals(t,'joint'),[60,120,0,0],'Kontoinhaber');
+  eq(vals(t,'group'),[90,0,0,0],'Ganze Gruppe');
+});
+test('Abrechnung: Abendessen 90 € für alle – c schuldet J 30',()=>eq(tr(only(holderTrip(),['dinner'])),[['c','J',30]]));
+test('Abrechnung: Doppelzimmer 120 € für a, b – neutral',()=>eq(tr(only(holderTrip(),['room'])),[]));
+test('Abrechnung: Taxi 30 € für c – c schuldet J 30',()=>eq(tr(only(holderTrip(),['taxi'])),[['c','J',30]]));
+test('Abrechnung: Souvenir 15 € nur für b – b schuldet J 15',()=>eq(tr(only(holderTrip(),['souvenir'])),[['b','J',15]]));
+test('Abrechnung gesamt: c→J 60, b→J 15',()=>eq(tr(holderTrip()),[['c','J',60],['b','J',15]]));
+test('Zahler a, 30 € für a, b, c: b und c schulden a je 10',()=>{
+  const t=holderTrip(); t.expenses=[ex('x',30,10,{cur:'EUR',rate:1,payer:'a',for:['a','b','c']})];
+  eq(tr(t),[['b','a',10],['c','a',10]]);
+});
+test('Gelöschte Person zählt nicht als Inhaber, neue Person ist nicht automatisch Inhaber',()=>{
+  const t=holderTrip(); t.people[1].deleted=true;
+  eq(RKCALC.members(t),['a']);
+  t.people.push({id:'d',name:'Dora',updated:2}); eq(RKCALC.members(t),['a']);
+});
+test('Zwei Personen, beide Inhaber: wie bisher',()=>{
+  const t=baseTrip(); t.expenses.push(ex('s',3000,10),ex('p',1500,10,{for:['b'],shared:false}),ex('q',900,10,{payer:'a',for:['b'],shared:false}));
+  eq(RKCALC.members(t),['a','b']); eq(RKCALC.viewsDiffer(t),false); eq(RKCALC.budgetMode(t),'joint');
+  eq(vals(t,'joint'),[20,0,0],'zählt nur Gemeinsames, voll'); eq(vals(t,'joint'),vals(t,'group'));
+  eq(tr(only(clone(t),['s'])),[],'gemeinsame Ausgabe von J ist neutral');
+  eq(tr(only(clone(t),['p'])),[['b','J',10]],'J nur für b: b schuldet J');
+  eq(tr(t),[['b','J',10],['b','a',6]]);
+  eq(t.expenses.map(e=>RKCALC.counts(t,e)),[true,false,false],'Tagesbudget-Spalte wie bisher');
+});
+test('Gemeinsame Kasse aus: Sicht ganze Gruppe',()=>{
+  const t=holderTrip(); t.joint={...t.joint,on:false};
+  eq(RKCALC.viewsDiffer(t),false); eq(RKCALC.budgetMode(t),'group');
+});
+test('Zusammenführen: Inhaber und „Budget gilt für“ kommen auf dem anderen Gerät an',()=>{
+  const t=holderTrip(); t.joint={...t.joint,members:['a','b','c']};
+  const A=state([t]), B=clone(A);
+  Object.assign(A.trips[0],{joint:{...A.trips[0].joint,members:['a','b']},budgetFor:'group',updated:20});
+  const r=RK.mergeState(B,file(A));
+  eq([B.trips[0].joint.members,B.trips[0].budgetFor,r[0].settings],[['a','b'],'group',true]);
+  Object.assign(B.trips[0],{joint:{...B.trips[0].joint,members:['a']},updated:30});
+  sync(A,B);
+  eq([A.trips[0].joint.members,A.trips[0].budgetFor],[['a'],'group'],'neuere gewinnt'); eq(strip(A),strip(B));
+});
+test('Ältere Datei ohne Inhaber und „Budget gilt für“ wird ergänzt',()=>{
+  const t=baseTrip(); t.people.push({id:'c',name:'Cleo',updated:1},{id:'d',name:'Dora',deleted:true,updated:1});
+  t.joint={on:true,name:'Konto'}; delete t.budgetFor;
+  const d=RK.parseFile(RK.makeFile([t],'trip'));
+  eq([d.trips[0].joint.members,d.trips[0].budgetFor],[['a','b','c'],'joint']);
 });
 
 document.getElementById('sum').innerHTML=`<b class="${fail?'bad':'ok'}">${pass} bestanden, ${fail} fehlgeschlagen</b>`;

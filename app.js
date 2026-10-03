@@ -33,9 +33,10 @@ const DEFAULT_CATS=[['✈','Flüge',false,true],['🛏','Unterkunft',true],['�
 
 function newTrip(from){
   const t=today(), ts=now();
-  return {id:uid(),name:'Neue Reise',start:t,end:addDays(t,6),budget:0,
-    joint:from?{...from.joint}:{on:true,name:'Gemeinschaftskonto'},deleted:false,created:ts,updated:ts,lastCur:'EUR',
-    people:from?live(from.people).map(p=>({id:p.id,name:p.name,updated:ts})):[{id:uid(),name:'Person 1',updated:ts},{id:uid(),name:'Person 2',updated:ts}],
+  const ps=from?live(from.people).map(p=>({id:p.id,name:p.name,updated:ts})):[{id:uid(),name:'Person 1',updated:ts},{id:uid(),name:'Person 2',updated:ts}];
+  return {id:uid(),name:'Neue Reise',start:t,end:addDays(t,6),budget:0,budgetFor:from&&from.budgetFor||'joint',
+    joint:from?{...from.joint,members:RKCALC.members(from)}:{on:true,name:'Gemeinschaftskonto',members:ps.map(p=>p.id)},deleted:false,created:ts,updated:ts,lastCur:'EUR',
+    people:ps,
     cats:from?live(from.cats).filter(c=>!c.hidden).map(c=>({id:uid(),emoji:c.emoji,name:c.name,budget:0,hidden:false,nights:!!c.nights,excl:!!c.excl,updated:ts}))
       :DEFAULT_CATS.map(([e,n,ni,ex])=>({id:uid(),emoji:e,name:n,budget:0,hidden:false,nights:!!ni,excl:!!ex,updated:ts})),
     currencies:[],expenses:[]};
@@ -60,6 +61,8 @@ let S=load()||{v:1,active:null,trips:[],lastBackup:null};
 S.trips.forEach(RK.normalizeTrip);
 let T=null;
 let tab='overview', filter=null, suggestion=null, installEvt=null, persisted=null, appVersion='';
+/* Gewählte Sicht (nur für diese Sitzung): null = die Sicht, für die das Budget gilt */
+let viewMode=null, viewTrip=null;
 
 /* ---------- Grundfunktionen ---------- */
 const people=()=>live(T.people);
@@ -72,14 +75,24 @@ const toEUR=e=>e.cur==='EUR'?e.amount:e.amount/e.rate;
 const catOf=id=>T.cats.find(c=>c.id===id)||{emoji:'•',name:'Unbekannt'};
 const person=id=>T.people.find(p=>p.id===id);
 const pName=id=>id==='J'?T.joint.name:((person(id)||{}).name||'Unbekannt');
-const forIds=e=>e.for&&e.for.length?e.for:people().map(p=>p.id);
-const inBudget=e=>!!e.shared;
-const shared=()=>exps().filter(inBudget);
+const forIds=e=>RKCALC.forIds(T,e);
+/* Sichten: 'joint' (Kontoinhaber) und 'group' (ganze Gruppe). Das Budget gilt für budgetMode. */
+const members=()=>RKCALC.members(T);
+const viewsDiffer=()=>RKCALC.viewsDiffer(T);
+const budgetMode=()=>RKCALC.budgetMode(T);
+const curMode=()=>viewsDiffer()?(viewMode||budgetMode()):budgetMode();
+const budgetActive=()=>curMode()===budgetMode();
+const budget=()=>budgetActive()?T.budget:0;
+const val=e=>RKCALC.value(T,e,curMode());
+const counted=()=>exps().filter(e=>val(e)>0);
+const sumV=a=>a.reduce((s,e)=>s+val(e),0);
+const holders=()=>{const m=members();return m.length>3?'Kontoinhaber':m.map(pName).join(' & ')};
+const viewName=m=>m==='joint'?holders():'Ganze Gruppe';
 /* Herausgerechnet (z. B. Flüge): zählt zum Gesamtbudget, aber nicht zum Tagesbudget und zu den Ø-Werten.
    Die Ausgabe folgt ihrer Kategorie, außer sie hat eine eigene Einstellung (e.excl). */
 const catExcl=id=>!!catOf(id).excl;
 const isExcl=e=>e.excl!==undefined?!!e.excl:catExcl(e.cat);
-const daily=()=>shared().filter(e=>!isExcl(e));
+const daily=()=>counted().filter(e=>!isExcl(e));
 const sumE=a=>a.reduce((s,e)=>s+toEUR(e),0);
 const forLabel=f=>!f||people().every(p=>f.includes(p.id))?'für alle':(f.length===1?'nur '+pName(f[0]):'für '+f.map(pName).join(', '));
 const curList=()=>['EUR',...curs().map(c=>c.code)];
@@ -87,7 +100,7 @@ const curList=()=>['EUR',...curs().map(c=>c.code)];
 function alloc(ex){
   const out=[], end=T.end;
   for(const e of ex){
-    const v=toEUR(e);
+    const v=val(e);
     if(e.nights>0){for(let i=0;i<e.nights;i++){let d=addDays(e.date,i);if(d>end)d=end;out.push({date:d,v:v/e.nights,cat:e.cat})}}
     else out.push({date:e.date,v,cat:e.cat});
   }
@@ -95,52 +108,32 @@ function alloc(ex){
 }
 const sumA=a=>a.reduce((s,x)=>s+x.v,0);
 function budgetState(){
-  const t=today(),{start,end,budget}=T, ex=shared();
-  const total=Math.max(1,diffDays(start,end)+1), spent=sumE(ex);
+  const t=today(),{start,end}=T, bud=budget(), ex=counted();
+  const total=Math.max(1,diffDays(start,end)+1), spent=sumV(ex);
   let phase='during',ref=t;
   if(t<start){phase='before';ref=start}
   if(t>end){phase='after';ref=end}
   /* Herausgerechnetes wird vorab vom Budget abgezogen, unabhängig vom Datum */
-  const fixed=sumE(ex.filter(isExcl)), al=alloc(daily());
+  const fixed=sumV(ex.filter(isExcl)), al=alloc(daily());
   const before=sumA(al.filter(x=>x.date<ref)), todaySpent=sumA(al.filter(x=>x.date===ref));
-  const remDays=Math.max(1,diffDays(ref,end)+1), allowance=(budget-fixed-before)/remDays;
+  const remDays=Math.max(1,diffDays(ref,end)+1), allowance=(bud-fixed-before)/remDays;
   const elapsed=phase==='before'?0:diffDays(start,ref)+1;
-  const personal=sumE(exps().filter(e=>!inBudget(e)));
-  return {phase,ref,total,elapsed,planned:(budget-fixed)/total,dayNo:diffDays(start,ref)+1,spent,left:budget-spent,allowance,todayLeft:allowance-todaySpent,daysTo:diffDays(t,start),personal,fixed};
+  /* In dieser Sicht nicht enthalten: Ausgaben anderer und Anteile, die nicht zur Sicht gehören */
+  const outside=sumE(exps())-sumV(exps());
+  return {phase,ref,total,elapsed,planned:(bud-fixed)/total,dayNo:diffDays(start,ref)+1,spent,left:bud-spent,allowance,todayLeft:allowance-todaySpent,daysTo:diffDays(t,start),outside,fixed};
 }
 function perNight(catId){
-  const ex=shared().filter(e=>e.cat===catId&&e.nights>0), n=ex.reduce((a,e)=>a+e.nights,0);
-  return n?{n,v:sumE(ex)/n}:null;
+  const ex=counted().filter(e=>e.cat===catId&&e.nights>0), n=ex.reduce((a,e)=>a+e.nights,0);
+  return n?{n,v:sumV(ex)/n}:null;
 }
 function avgFor(catId){
-  const b=budgetState(), all=shared().filter(e=>!catId||e.cat===catId), v=sumE(all);
-  const ex=all.filter(e=>!isExcl(e)), dv=sumE(ex), fixed=v-dv;
+  const b=budgetState(), all=counted().filter(e=>!catId||e.cat===catId), v=sumV(all);
+  const ex=all.filter(e=>!isExcl(e)), dv=sumV(ex), fixed=v-dv;
   const soFarV=b.elapsed?sumA(alloc(ex).filter(x=>x.date<=b.ref)):0;
   const c=catId?T.cats.find(x=>x.id===catId):null;
-  const planned=catId?(c&&c.budget&&!c.excl?Math.max(0,c.budget-fixed)/b.total:null):(T.budget?b.planned:null);
+  const planned=!budgetActive()?null:catId?(c&&c.budget&&!c.excl?Math.max(0,c.budget-fixed)/b.total:null):(T.budget?b.planned:null);
   return {v,fixed,excl:!!(c&&c.excl),soFar:b.elapsed?soFarV/b.elapsed:null,whole:dv/b.total,planned,elapsed:b.elapsed,total:b.total};
 }
-/* Abrechnung für beliebig viele Personen: Salden bilden, dann mit möglichst wenigen Zahlungen ausgleichen */
-function settlement(){
-  const bal={J:0}; people().forEach(p=>bal[p.id]=0);
-  for(const e of exps()){
-    const v=toEUR(e), parts=forIds(e), share=v/parts.length;
-    if(e.payer==='J'&&inBudget(e))continue;
-    bal[e.payer]=(bal[e.payer]||0)+v;
-    parts.forEach(id=>bal[id]=(bal[id]||0)-share);
-  }
-  const cred=Object.entries(bal).filter(([,v])=>v>0.005).map(([k,v])=>({k,v})).sort((a,b)=>b.v-a.v);
-  const debt=Object.entries(bal).filter(([,v])=>v<-0.005).map(([k,v])=>({k,v:-v})).sort((a,b)=>b.v-a.v);
-  const tr=[]; let i=0,j=0;
-  while(i<debt.length&&j<cred.length){
-    const m=Math.min(debt[i].v,cred[j].v);
-    tr.push({from:debt[i].k,to:cred[j].k,v:m});
-    debt[i].v-=m;cred[j].v-=m;
-    if(debt[i].v<0.005)i++; if(cred[j].v<0.005)j++;
-  }
-  return tr;
-}
-
 /* ---------- Sicherung ---------- */
 function lastChange(){
   let m=0;
@@ -253,6 +246,7 @@ function importCSV(text,fileName){
   }
   if(fresh){
     if(!live(target.people).length)target.people.push({id:uid(),name:'Person 1',updated:now()});
+    target.joint={...target.joint,members:live(target.people).map(p=>p.id)};
     const ds=live(target.expenses).map(e=>e.date).sort();
     if(ds.length){target.start=ds[0];target.end=ds[ds.length-1]}
     S.trips.push(target);S.active=target.id;tab='overview';
@@ -296,6 +290,7 @@ function render(){
   const trips=live(S.trips);
   T=trips.find(t=>t.id===S.active)||trips[0]||null;
   if(T&&S.active!==T.id)S.active=T.id;
+  if(T&&T.id!==viewTrip){viewMode=null;viewTrip=T.id}
   document.body.classList.toggle('welcome',!T);
   if(!T){$('#app').innerHTML=welcome();bindView();return}
   document.querySelectorAll('.tab').forEach(b=>{if(b.dataset.tab===tab)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current')});
@@ -322,27 +317,35 @@ function welcome(){
   </div>`;
 }
 function fmtRange(){const f=s=>dfmt(s,{day:'numeric',month:'short'});return f(T.start)+' bis '+f(T.end)}
+/* Umschalter zwischen den Sichten, nur wenn sie sich unterscheiden */
+function viewSwitch(){
+  if(!viewsDiffer())return '';
+  const cur=curMode(), bm=budgetMode();
+  return `<div class="viewseg" role="group" aria-label="Sicht">${['joint','group'].map(m=>
+    `<button data-view="${m}" aria-pressed="${cur===m}">${esc(viewName(m))}${m===bm?' <small>(Budget)</small>':''}</button>`).join('')}</div>`;
+}
 function overview(){
-  const b=budgetState(), pct=T.budget?Math.min(100,b.spent/T.budget*100):0;
+  const bud=budget(), b=budgetState(), pct=bud?Math.min(100,b.spent/bud*100):0;
   let label='Heute noch', big=eur(b.todayLeft), hint=`von ${eur(b.allowance)} Tagesbudget, Tag ${b.dayNo} von ${b.total}`;
   if(b.phase==='before'){label=`Reise beginnt in ${b.daysTo} ${b.daysTo===1?'Tag':'Tagen'}`;big=eur(b.allowance);hint='Tagesbudget, wenn nichts vorab bezahlt wird'}
   if(b.phase==='after'){label='Reise beendet';big=eur(b.left);hint=b.left>=0?'unter Budget geblieben':'über Budget'}
-  if(!T.budget){label='Noch kein Budget';big=eur(b.spent);hint='ausgegeben. Lege unter „Reise“ ein Gesamtbudget fest.'}
-  const over=T.budget&&((b.phase==='during'&&b.todayLeft<0)||(b.phase==='after'&&b.left<0));
+  if(!budgetActive()){label=curMode()==='group'?'Kosten der ganzen Gruppe':members().length>3?'Kosten der Kontoinhaber':'Kosten für '+holders();big=eur(b.spent);hint='ausgegeben. Das Budget gilt für: '+viewName(budgetMode())}
+  else if(!T.budget){label='Noch kein Budget';big=eur(b.spent);hint='ausgegeben. Lege unter „Reise“ ein Gesamtbudget fest.'}
+  const over=bud&&((b.phase==='during'&&b.todayLeft<0)||(b.phase==='after'&&b.left<0));
   const rows=cats().filter(c=>!c.hidden).map(c=>({c,a:avgFor(c.id)})).sort((x,y)=>y.a.v-x.a.v).map(({c,a})=>{
-    const p=c.budget?Math.min(100,a.v/c.budget*100):0, o=c.budget&&a.v>c.budget;
+    const cb=budgetActive()?c.budget:0, p=cb?Math.min(100,a.v/cb*100):0, o=cb&&a.v>cb;
     const hot=a.planned!=null&&a.soFar!=null&&a.soFar>a.planned, pn=c.nights&&perNight(c.id);
     return `<button class="catrow catlink" data-filter="${c.id}"><span class="ic">${esc(c.emoji)}</span><span>${esc(c.name)}</span>
-      <span class="amt">${eur(a.v)}${c.budget?`<small>von ${eur(c.budget)}</small>`:''}</span>
-      ${c.budget?`<div class="cbar ${o?'over':''}"><i style="width:${p}%"></i></div>`:''}
+      <span class="amt">${eur(a.v)}${cb?`<small>von ${eur(cb)}</small>`:''}</span>
+      ${cb?`<div class="cbar ${o?'over':''}"><i style="width:${p}%"></i></div>`:''}
       <div class="cavg">${a.excl?'<span>Nicht im Tagesbudget, zählt nur zum Gesamtbudget</span>'
         :`<span class="${hot?'hot':''}">Ø ${a.soFar==null?'–':eur2(a.soFar)} bisher</span><span>Ø ${eur2(a.whole)} ganze Reise</span>${a.planned!=null?`<span>Plan ${eur2(a.planned)}</span>`:''}${a.fixed>=0.01?`<span>ohne ${eur2(a.fixed)} herausgerechnet</span>`:''}`}${pn?`<span>Ø ${eur2(pn.v)} pro Nacht (${pn.n} ${pn.n===1?'Nacht':'Nächte'})</span>`:''}</div></button>`}).join('');
-  return `<div class="ticket">
+  return viewSwitch()+`<div class="ticket">
     <div class="main"><div class="label">${label}</div><div class="big ${over?'over':''}">${big}</div><div class="hint">${hint}</div></div>
     <div class="perf"></div>
-    <div class="stub"><div><div class="s">Gesamt noch</div><div class="v">${T.budget?eur(b.left):'–'}</div></div>
-      <div style="text-align:right"><div class="s">ausgegeben</div><div class="v">${eur(b.spent)} <span class="s">von ${T.budget?eur(T.budget):'–'}</span></div></div>
-      <div class="bar ${T.budget&&b.left<0?'over':''}"><i style="width:${pct}%"></i></div></div>
+    <div class="stub"><div><div class="s">Gesamt noch</div><div class="v">${bud?eur(b.left):'–'}</div></div>
+      <div style="text-align:right"><div class="s">ausgegeben</div><div class="v">${eur(b.spent)} <span class="s">von ${bud?eur(bud):'–'}</span></div></div>
+      <div class="bar ${bud&&b.left<0?'over':''}"><i style="width:${pct}%"></i></div></div>
   </div>
   <section class="block"><h2>Durchschnittliche Kosten</h2>${avgBlock()}</section>
   <section class="block"><h2>Nach Kategorie</h2><div class="panel">${rows}</div>
@@ -352,24 +355,27 @@ function avgBlock(catId){
   const a=avgFor(catId), b=budgetState();
   if(a.excl)return `<div class="avg"><div class="p">Diese Kategorie ist aus Tagesbudget und Durchschnitten herausgerechnet. Ihre ${eur2(a.v)} zählen nur zum Gesamtbudget.</div></div>`;
   const hot=a.planned!=null&&a.soFar!=null&&a.soFar>a.planned;
-  const foot=[a.planned!=null?`Geplant sind ${eur2(a.planned)} pro Tag.`:(catId?'Für diese Kategorie ist kein Budget festgelegt.':'Noch kein Gesamtbudget festgelegt.')];
+  const foot=[a.planned!=null?`Geplant sind ${eur2(a.planned)} pro Tag.`:!budgetActive()?'':(catId?'Für diese Kategorie ist kein Budget festgelegt.':'Noch kein Gesamtbudget festgelegt.')];
   if(a.fixed>=0.01)foot.push(catId?`${eur2(a.fixed)} dieser Kategorie sind herausgerechnet.`:`Herausgerechnet sind ${eur2(a.fixed)}, z. B. Flüge. Sie zählen zum Gesamtbudget, aber nicht zu Tagesbudget und Durchschnitt.`);
   if(daily().some(e=>(!catId||e.cat===catId)&&e.nights>1))foot.push('Unterkünfte sind auf ihre Nächte verteilt.');
-  if(!catId&&b.personal>=0.01)foot.push(`Ausgaben nicht für alle (${eur2(b.personal)}) zählen nicht ins Reisebudget.`);
+  /* Sind alle Personen Inhaber, ist die Sicht 'joint' gleich der ganzen Gruppe */
+  if(!catId&&b.outside>=0.01)foot.push(curMode()==='joint'&&members().length<people().length?`Nicht enthalten sind ${eur2(b.outside)}: Anteile anderer Personen und Ausgaben nur für eine/n von euch.`
+    :`Ausgaben nicht für alle (${eur2(b.outside)}) zählen hier nicht.`);
   return `<div class="avg">
     <div><div class="k">Ø pro Tag bisher</div><div class="n ${hot?'over':''}">${a.soFar==null?'–':eur2(a.soFar)}</div><div class="k">${a.elapsed?`über ${a.elapsed} ${a.elapsed===1?'Tag':'Tage'}`:'Reise noch nicht begonnen'}</div></div>
     <div><div class="k">Ø pro Tag, ganze Reise</div><div class="n">${eur2(a.whole)}</div><div class="k">über ${a.total} Tage</div></div>
-    <div class="p">${foot.join(' ')}</div></div>`;
+    <div class="p">${foot.filter(Boolean).join(' ')}</div></div>`;
 }
 function itemHTML(e){
-  const c=catOf(e.cat), v=toEUR(e), tags=[];
+  const c=catOf(e.cat), v=toEUR(e), w=val(e), tags=[];
   if(e.payer!=='J')tags.push(`<span class="tag">bezahlt von ${esc(pName(e.payer))}</span>`);
-  if(!inBudget(e))tags.push(`<span class="tag own">${esc(forLabel(e.for))}, nicht im Budget</span>`);
+  if(!(w>0))tags.push(`<span class="tag own">${esc(forLabel(e.for))}, nicht im Budget</span>`);
+  else if(w<v-0.005)tags.push(`<span class="tag">davon ${eur2(w)} ${curMode()==='joint'?'für euch':'im Budget'}</span>`);
   if(e.method==='cash')tags.push(`<span class="tag cash">Bar</span>`);
-  if(inBudget(e)&&isExcl(e))tags.push(`<span class="tag">nicht im Tagesbudget</span>`);
+  if(w>0&&isExcl(e))tags.push(`<span class="tag">nicht im Tagesbudget</span>`);
   if(e.nights>0)tags.push(`<span class="tag">${e.nights} ${e.nights===1?'Nacht':'Nächte'}, ${eur2(v/e.nights)} pro Nacht</span>`);
   const orig=e.cur==='EUR'?'':`<small>${num(e.amount,e.amount%1?2:0)} ${esc(e.cur)}</small>`;
-  return `<button class="item ${inBudget(e)?'':'personal'}" data-edit="${e.id}"><span class="ic">${esc(c.emoji)}</span>
+  return `<button class="item ${w>0?'':'personal'}" data-edit="${e.id}"><span class="ic">${esc(c.emoji)}</span>
     <span><span class="t">${esc(e.note||c.name)}</span><span class="m">${e.note?`<span>${esc(c.name)}</span>`:''}${tags.join('')}</span></span>
     <span class="a">${eur2(v)}${orig}</span></button>`;
 }
@@ -382,20 +388,20 @@ function list(){
     ${used.map(c=>`<button data-filter="${c.id}" aria-pressed="${filter===c.id}">${esc(c.emoji)} ${esc(c.name)}</button>`).join('')}</div>`;
   const ex=all.filter(e=>!filter||e.cat===filter), days=[...new Set(ex.map(e=>e.date))].sort().reverse();
   const fpn=filter&&catOf(filter).nights?perNight(filter):null;
-  const title=filter?`<h2 class="ftitle">${esc(catOf(filter).emoji)} ${esc(catOf(filter).name)}: ${eur2(sumE(shared().filter(e=>e.cat===filter)))}${fpn?`<br><span class="fsub">Ø ${eur2(fpn.v)} pro Nacht über ${fpn.n} Nächte</span>`:''}</h2>`:'';
-  return chips+title+avgBlock(filter)+(days.length?days.map(d=>{
+  const title=filter?`<h2 class="ftitle">${esc(catOf(filter).emoji)} ${esc(catOf(filter).name)}: ${eur2(sumV(counted().filter(e=>e.cat===filter)))}${fpn?`<br><span class="fsub">Ø ${eur2(fpn.v)} pro Nacht über ${fpn.n} Nächte</span>`:''}</h2>`:'';
+  return viewSwitch()+chips+title+avgBlock(filter)+(days.length?days.map(d=>{
     const es=ex.filter(e=>e.date===d).sort((a,b)=>b.created-a.created);
-    return `<div class="day"><div class="dayhead"><span>${dayLabel(d)}</span><span>${eur2(sumE(es.filter(inBudget)))}</span></div>${es.map(itemHTML).join('')}</div>`;
+    return `<div class="day"><div class="dayhead"><span>${dayLabel(d)}</span><span>${eur2(sumV(es))}</span></div>${es.map(itemHTML).join('')}</div>`;
   }).join(''):`<div class="empty" style="margin-top:14px">Keine Ausgaben in dieser Kategorie.</div>`);
 }
 function settle(){
-  const tr=settlement();
+  const tr=RKCALC.settlement(T), m=members();
   const out=tr.length?tr.map(t=>`<div class="debt"><div class="who">${esc(pName(t.from))} <span>zahlt an</span> ${esc(pName(t.to))}</div><div class="v">${eur2(t.v)}</div></div>`).join('')
     :`<div class="ok">Alles ausgeglichen. Niemand schuldet jemandem etwas.</div>`;
   const payers=[...(T.joint.on||exps().some(e=>e.payer==='J')?['J']:[]),...people().map(p=>p.id)];
   const byPayer=payers.map(p=>`<div class="catrow"><span class="ic">${p==='J'?'🏦':'👤'}</span><span>${esc(pName(p))}</span><span class="amt">${eur2(sumE(exps().filter(e=>e.payer===p)))}</span></div>`).join('');
   return `<section class="block" style="margin-top:0"><h2>Wer schuldet wem</h2>${out}
-    <p class="explain">Gemeinsame Ausgaben werden gleichmäßig auf alle beteiligten Personen verteilt. Zahlungen vom ${esc(T.joint.name)} für alle zählen nur fürs Budget. Hat es etwas bezahlt, das nicht für alle war, zahlen die Beteiligten ihren Anteil zurück. Die Vorschläge sind so verrechnet, dass möglichst wenige Überweisungen nötig sind.</p></section>
+    <p class="explain">Gemeinsame Ausgaben werden gleichmäßig auf alle beteiligten Personen verteilt. Hat das ${esc(T.joint.name)} bezahlt und sind alle Inhaber${m.length?` (${esc(m.map(pName).join(', '))})`:''} beteiligt, sind die Anteile der Inhaber neutral und zählen nur fürs Budget. Alle anderen Anteile zahlen die Beteiligten an die Kasse zurück. Die Vorschläge sind so verrechnet, dass möglichst wenige Überweisungen nötig sind.</p></section>
     <section class="block"><h2>Bezahlt von</h2><div class="panel">${byPayer}</div></section>`;
 }
 function trip(){
@@ -444,7 +450,10 @@ function trip(){
   </div></section>
   <section class="block"><h2>Personen</h2><div class="panel">${pRows}
     <div class="field"><label class="check"><input type="checkbox" id="jointOn" ${t.joint.on?'checked':''}> Gemeinsame Kasse nutzen</label>
-      ${t.joint.on?`<input data-joint value="${esc(t.joint.name)}" aria-label="Name der gemeinsamen Kasse">`:''}</div>
+      ${t.joint.on?`<input data-joint value="${esc(t.joint.name)}" aria-label="Name der gemeinsamen Kasse">
+      <div class="jopts"><div class="dlabel">Kontoinhaber</div><div class="seg" role="group" aria-label="Kontoinhaber">${ps.map(p=>`<button data-member="${p.id}" aria-pressed="${members().includes(p.id)}">${esc(p.name)}</button>`).join('')}</div></div>
+      <div class="jopts"><div class="dlabel">Budget gilt für</div><div class="seg" role="group" aria-label="Budget gilt für"><button data-bfor="joint" aria-pressed="${t.budgetFor!=='group'}">Kontoinhaber</button><button data-bfor="group" aria-pressed="${t.budgetFor==='group'}">Ganze Gruppe</button></div></div>
+      <p class="explain" style="margin:6px 0 0"><b>Kontoinhaber:</b> Es zählt alles, an dem alle Inhaber beteiligt sind, mit ihrem Anteil. <b>Ganze Gruppe:</b> Es zählen Ausgaben für alle, voll.</p>`:''}</div>
     <div style="padding:8px 0 10px"><button class="btn wide" id="pAdd">Person hinzufügen</button></div></div></section>
   <section class="block"><h2>Währungen</h2><div class="panel">
     <p class="explain" style="margin:10px 0 4px">Euro ist immer dabei. Füge alle Währungen hinzu, die unterwegs anfallen, auch beim Umstieg. Ein geänderter Kurs gilt nur für neue Ausgaben.</p>${cRows}
@@ -470,6 +479,7 @@ function bindView(){
   on('bkAll',()=>exportChoice('backup'));
   on('bkTrip',()=>exportChoice('trip'));
   on('bkCsv',()=>exportChoice('csv'));
+  all('[data-view]',b=>b.onclick=()=>{viewMode=b.dataset.view;render()});
   all('[data-filter]',b=>b.onclick=()=>{filter=b.dataset.filter||null;tab='list';render();window.scrollTo(0,0)});
   all('[data-edit]',b=>b.onclick=()=>openSheet(T.expenses.find(e=>e.id===b.dataset.edit)));
   all('[data-trip-id]',b=>b.onclick=()=>{S.active=b.dataset.tripId;filter=null;suggestion=null;save();render();toast('Reise gewechselt')});
@@ -487,6 +497,11 @@ function bindView(){
   on('pAdd',()=>{T.people.push({id:uid(),name:'Person '+(people().length+1),updated:now()});commitT();const ins=document.querySelectorAll('[data-person]');const l=ins[ins.length-1];l&&(l.focus(),l.select())});
   const jo=document.getElementById('jointOn'); if(jo)jo.onchange=()=>{T.joint={...T.joint,on:jo.checked};touch(T);commitT()};
   all('[data-joint]',i=>i.onchange=()=>{T.joint={...T.joint,name:i.value.trim()||T.joint.name};touch(T);commitT()});
+  all('[data-member]',b=>b.onclick=()=>{
+    const id=b.dataset.member, m=members();
+    T.joint={...T.joint,members:m.includes(id)?m.filter(x=>x!==id):people().map(p=>p.id).filter(x=>x===id||m.includes(x))};touch(T);commitT();
+  });
+  all('[data-bfor]',b=>b.onclick=()=>{if(T.budgetFor===b.dataset.bfor)return;T.budgetFor=b.dataset.bfor;viewMode=null;touch(T);commitT()});
   on('cAdd',()=>{
     const code=$('#cCode').value.trim().toUpperCase(), rate=pr($('#cRate').value);
     if(!/^[A-Z]{3}$/.test(code)){toast('Bitte einen dreistelligen Währungscode eingeben, z. B. TZS');return}
@@ -580,9 +595,9 @@ function drawSheet(){
   const seg=(key,opts)=>`<div class="seg">${opts.map(([val,lab])=>`<button data-set="${key}" data-val="${val}" aria-pressed="${D[key]===val}">${esc(lab)}</button>`).join('')}</div>`;
   const ps=people();
   const payers=[...(T.joint.on||D.payer==='J'?[['J',T.joint.name]]:[]),...ps.map(p=>[p.id,p.name])];
-  const isAll=!D.for;
+  const isAll=!D.for, dCounts=RKCALC.counts(T,{for:D.for||ps.map(p=>p.id),shared:isAll,amount:1,cur:'EUR'});
   const forChips=`<div class="seg"><button data-forall aria-pressed="${isAll}">Alle</button>${ps.map(p=>`<button data-for="${p.id}" aria-pressed="${!isAll&&D.for.includes(p.id)}">${esc(p.name)}</button>`).join('')}</div>`;
-  const summary=[pName(D.payer),forLabel(D.for),D.method==='cash'?'Bar':'Karte',D.date===today()?'heute':dfmt(D.date,{day:'numeric',month:'short'}),...(!D.for&&dExcl()?['nicht im Tagesbudget']:[])].join(', ');
+  const summary=[pName(D.payer),forLabel(D.for),D.method==='cash'?'Bar':'Karte',D.date===today()?'heute':dfmt(D.date,{day:'numeric',month:'short'}),...(dCounts&&dExcl()?['nicht im Tagesbudget']:[])].join(', ');
   const cs=cats().filter(c=>!c.hidden||c.id===D.cat).map(c=>`<button data-cat="${c.id}" aria-pressed="${D.cat===c.id}"><span class="e">${esc(c.emoji)}</span>${esc(c.name)}</button>`).join('');
   const cl=curList(); if(!cl.includes(D.cur))cl.push(D.cur);
   $('#sheetInner').innerHTML=`<div class="grab"></div>
@@ -597,7 +612,7 @@ function drawSheet(){
         <div><div class="dlabel">Bezahlt von</div>${seg('payer',payers)}</div>
         <div><div class="dlabel">Für wen</div>${forChips}</div>
         <div><div class="dlabel">Zahlungsart</div>${seg('method',[['card','Karte'],['cash','Bar']])}</div>
-        ${D.for?'':`<div><div class="dlabel">Tagesbudget und Durchschnitt</div><div class="seg"><button data-excl="0" aria-pressed="${!dExcl()}">einrechnen</button><button data-excl="1" aria-pressed="${dExcl()}">herausrechnen, z. B. Flug</button></div></div>`}
+        ${!dCounts?'':`<div><div class="dlabel">Tagesbudget und Durchschnitt</div><div class="seg"><button data-excl="0" aria-pressed="${!dExcl()}">einrechnen</button><button data-excl="1" aria-pressed="${dExcl()}">herausrechnen, z. B. Flug</button></div></div>`}
         <div><div class="dlabel">Datum</div><input type="date" id="dDate" value="${D.date}"></div>
       </div></div>
     <div class="cathint">${D.id?'Kategorie':'Kategorie antippen, um zu speichern'}</div>
