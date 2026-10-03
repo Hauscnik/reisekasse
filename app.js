@@ -63,6 +63,8 @@ let T=null;
 let tab='overview', filter=null, suggestion=null, installEvt=null, persisted=null, appVersion='';
 /* Gewählte Sicht (nur für diese Sitzung): null = die Sicht, für die das Budget gilt */
 let viewMode=null, viewTrip=null;
+/* Neue App-Version ist geladen und wartet auf „Neu laden“ */
+let swReg=null, updateReady=false;
 
 /* ---------- Grundfunktionen ---------- */
 const people=()=>live(T.people);
@@ -296,7 +298,8 @@ function render(){
   document.querySelectorAll('.tab').forEach(b=>{if(b.dataset.tab===tab)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current')});
   const head=`<header class="top"><h1>${esc(T.name)}</h1><button class="sub linkish" id="goTrips">${fmtRange()}${trips.length>1?', Reise wechseln':''}</button></header>`;
   const views={overview,list,settle,trip};
-  $('#app').innerHTML=head+(tab==='overview'?banners():'')+views[tab]();
+  const upd=updateReady?`<div class="banner info"><span>Neue Version der App ist bereit.</span><button id="appReload">Neu laden</button></div>`:'';
+  $('#app').innerHTML=head+upd+(tab==='overview'?banners():'')+views[tab]();
   bindView();
 }
 function installBtn(){return installEvt?`<button class="btn wide" data-install>Als App installieren</button>`:''}
@@ -476,6 +479,7 @@ function bindView(){
   if(!T)return;
   on('goTrips',()=>{tab='trip';render();const s=document.getElementById('tripsSec');s&&s.scrollIntoView&&s.scrollIntoView()});
   on('bkNow',()=>exportChoice('backup'));
+  on('appReload',()=>location.reload());
   on('bkAll',()=>exportChoice('backup'));
   on('bkTrip',()=>exportChoice('trip'));
   on('bkCsv',()=>exportChoice('csv'));
@@ -701,7 +705,8 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape'&&sheetOpen)closeShee
 /* Ein zweites Fenster derselben App hat gespeichert: dessen Stand übernehmen */
 window.addEventListener('storage',e=>{if(e.key===KEY&&e.newValue){try{S=JSON.parse(e.newValue);S.trips.forEach(RK.normalizeTrip);if(!sheetOpen)render()}catch(_){}}});
 /* Nach Stunden im Hintergrund stimmt „heute“ sonst nicht mehr */
-document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!sheetOpen)render()});
+/* Aus dem Hintergrund zurück: auch nach einer neuen Version fragen, denn ein echter Neustart ist auf Handys selten */
+document.addEventListener('visibilitychange',()=>{if(document.hidden)return;if(swReg)swReg.update().catch(()=>{});if(!sheetOpen)render()});
 window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();installEvt=e;if(!sheetOpen)render()});
 window.addEventListener('appinstalled',()=>{installEvt=null;if(!sheetOpen)render();toast('App installiert')});
 
@@ -709,7 +714,14 @@ if(navigator.storage&&navigator.storage.persist){
   navigator.storage.persisted().then(p=>p||navigator.storage.persist()).then(p=>{persisted=p;if(tab==='trip'&&!sheetOpen)render()}).catch(()=>{});
 }
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('sw.js').then(()=>navigator.serviceWorker.ready).then(()=>caches.keys()).then(keys=>{
+  /* Die neue Version übernimmt sofort (sw.js), diese Seite läuft aber mit den alten Dateien weiter.
+     Kein automatisches Neuladen, damit keine halbe Eingabe verloren geht. Beim allerersten Start gibt es nichts zu melden. */
+  let hadController=!!navigator.serviceWorker.controller;
+  navigator.serviceWorker.addEventListener('controllerchange',()=>{
+    if(hadController){updateReady=true;if(!sheetOpen)render()}
+    hadController=true;
+  });
+  navigator.serviceWorker.register('sw.js').then(r=>{swReg=r;return navigator.serviceWorker.ready}).then(()=>caches.keys()).then(keys=>{
     const c=keys.filter(k=>k.startsWith('reisekasse-')).sort().pop();
     if(c){appVersion=c.replace('reisekasse-','');if(tab==='trip'&&!sheetOpen)render()}
   }).catch(()=>{});

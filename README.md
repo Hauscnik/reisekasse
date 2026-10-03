@@ -5,7 +5,7 @@ Installierbare Web-App (PWA) zum Erfassen von Reiseausgaben, zur Budgetkontrolle
 - App: `index.html`, `style.css`, `app.js`
 - Dateiformat und Zusammenführen: `sync.js`, Tabelle (CSV): `csv.js`
 - Rechenlogik ohne Oberfläche: `calc.js` (`RKCALC`) – Kontoinhaber, Budget-Sichten, Abrechnung. Wird vor `csv.js` und `app.js` geladen.
-- Offline-Funktion: `sw.js` – **bei jeder Änderung `VERSION` erhöhen**, sonst bekommen installierte Apps das Update nicht.
+- Offline-Funktion: `sw.js` – **bei jeder Änderung `VERSION` erhöhen**, sonst bekommen installierte Apps das Update nicht. Die App sucht beim Start und bei der Rückkehr aus dem Hintergrund nach einer neuen Version und zeigt dann „Neu laden“.
 - Tests: `tests.html` im Browser öffnen
 - App-Symbole neu erzeugen: `python tools/make_icons.py`
 
