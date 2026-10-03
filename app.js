@@ -63,6 +63,8 @@ let T=null;
 let tab='overview', filter=null, suggestion=null, installEvt=null, persisted=null, appVersion='';
 /* Gewählte Sicht (nur für diese Sitzung): null = die Sicht, für die das Budget gilt */
 let viewMode=null, viewTrip=null;
+/* Filter der Ausgabenliste nach „Bezahlt von“ (null = alle), gilt nur für die geöffnete Reise */
+let payerFilter=null;
 /* Neue App-Version ist geladen und wartet auf „Neu laden“ */
 let swReg=null, updateReady=false;
 
@@ -292,7 +294,7 @@ function render(){
   const trips=live(S.trips);
   T=trips.find(t=>t.id===S.active)||trips[0]||null;
   if(T&&S.active!==T.id)S.active=T.id;
-  if(T&&T.id!==viewTrip){viewMode=null;viewTrip=T.id}
+  if(T&&T.id!==viewTrip){viewMode=null;payerFilter=null;viewTrip=T.id}
   document.body.classList.toggle('welcome',!T);
   if(!T){$('#app').innerHTML=welcome();bindView();return}
   document.querySelectorAll('.tab').forEach(b=>{if(b.dataset.tab===tab)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current')});
@@ -389,13 +391,22 @@ function list(){
   const used=cats().filter(c=>all.some(e=>e.cat===c.id));
   const chips=`<div class="chips" role="group" aria-label="Nach Kategorie filtern"><button data-filter="" aria-pressed="${!filter}">Alle</button>
     ${used.map(c=>`<button data-filter="${c.id}" aria-pressed="${filter===c.id}">${esc(c.emoji)} ${esc(c.name)}</button>`).join('')}</div>`;
-  const ex=all.filter(e=>!filter||e.cat===filter), days=[...new Set(ex.map(e=>e.date))].sort().reverse();
+  /* Zahler: die Kasse zuerst, dann die Personen; nur wer wirklich etwas bezahlt hat */
+  const payers=['J',...T.people.map(p=>p.id)].filter(id=>all.some(e=>e.payer===id));
+  if(payerFilter&&!payers.includes(payerFilter))payerFilter=null;
+  const pIcon=id=>id==='J'?'🏦':'👤';
+  const pChips=payers.length>1?`<div class="chips wrap" role="group" aria-label="Nach Zahler filtern"><span class="chiplabel">Bezahlt von</span><button data-payer="" aria-pressed="${!payerFilter}">Alle</button>
+    ${payers.map(id=>`<button data-payer="${id}" aria-pressed="${payerFilter===id}">${pIcon(id)} ${esc(pName(id))}</button>`).join('')}</div>`:'';
+  const ex=all.filter(e=>(!filter||e.cat===filter)&&(!payerFilter||e.payer===payerFilter)), days=[...new Set(ex.map(e=>e.date))].sort().reverse();
   const fpn=filter&&catOf(filter).nights?perNight(filter):null;
   const title=filter?`<h2 class="ftitle">${esc(catOf(filter).emoji)} ${esc(catOf(filter).name)}: ${eur2(sumV(counted().filter(e=>e.cat===filter)))}${fpn?`<br><span class="fsub">Ø ${eur2(fpn.v)} pro Nacht über ${fpn.n} Nächte</span>`:''}</h2>`:'';
-  return viewSwitch()+chips+title+avgBlock(filter)+(days.length?days.map(d=>{
+  /* Beim Zahler zählt, was wirklich bezahlt wurde: volle Beträge, unabhängig vom Budget */
+  const pTitle=payerFilter?`<h2 class="ftitle">${pIcon(payerFilter)} Bezahlt von ${esc(pName(payerFilter))}: ${eur2(sumE(ex))}<br><span class="fsub">${pl(ex.length,'Ausgabe','Ausgaben')}${filter?' in dieser Kategorie':''}, volle Beträge</span></h2>`:'';
+  /* Mit Zahler-Filter: Tagessummen in vollen Beträgen, keine Budget-Durchschnitte (die gelten nicht pro Zahler) */
+  return viewSwitch()+chips+pChips+title+pTitle+(payerFilter?'':avgBlock(filter))+(days.length?days.map(d=>{
     const es=ex.filter(e=>e.date===d).sort((a,b)=>b.created-a.created);
-    return `<div class="day"><div class="dayhead"><span>${dayLabel(d)}</span><span>${eur2(sumV(es))}</span></div>${es.map(itemHTML).join('')}</div>`;
-  }).join(''):`<div class="empty" style="margin-top:14px">Keine Ausgaben in dieser Kategorie.</div>`);
+    return `<div class="day"><div class="dayhead"><span>${dayLabel(d)}</span><span>${eur2(payerFilter?sumE(es):sumV(es))}</span></div>${es.map(itemHTML).join('')}</div>`;
+  }).join(''):`<div class="empty" style="margin-top:14px">${payerFilter?'Keine Ausgaben für diese Auswahl.':'Keine Ausgaben in dieser Kategorie.'}</div>`);
 }
 function settle(){
   const tr=RKCALC.settlement(T), m=members();
@@ -484,6 +495,7 @@ function bindView(){
   on('bkTrip',()=>exportChoice('trip'));
   on('bkCsv',()=>exportChoice('csv'));
   all('[data-view]',b=>b.onclick=()=>{viewMode=b.dataset.view;render()});
+  all('[data-payer]',b=>b.onclick=()=>{payerFilter=b.dataset.payer||null;render()});
   all('[data-filter]',b=>b.onclick=()=>{filter=b.dataset.filter||null;tab='list';render();window.scrollTo(0,0)});
   all('[data-edit]',b=>b.onclick=()=>openSheet(T.expenses.find(e=>e.id===b.dataset.edit)));
   all('[data-trip-id]',b=>b.onclick=()=>{S.active=b.dataset.tripId;filter=null;suggestion=null;save();render();toast('Reise gewechselt')});
