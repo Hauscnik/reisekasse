@@ -25,12 +25,16 @@ function budgetMode(t){
 /* Sichten, zwischen denen die App umschalten kann */
 const modes=t=>viewsDiffer(t)?['joint','group']:[budgetMode(t)];
 
-/* Wert einer Ausgabe in EUR in der Sicht `mode` */
+/* Sind alle Inhaber an der Ausgabe beteiligt? „Für alle“ ist beim Speichern festgeschrieben: Kam ein Inhaber
+   erst später dazu, gilt die Ausgabe trotzdem als für alle Inhaber, er zahlt aber nicht rückwirkend mit. */
+const allHolders=(m,e,f)=>m.length>0&&(!!e.shared||m.every(id=>f.includes(id)));
+
+/* Wert einer Ausgabe in EUR in der Sicht `mode`: in 'joint' der Anteil der beteiligten Inhaber */
 function value(t,e,mode){
   if(mode==='group')return e.shared?toEUR(e):0;
   const m=members(t), f=forIds(t,e);
-  if(!m.length||!m.every(id=>f.includes(id)))return 0;
-  return toEUR(e)*m.length/f.length;
+  if(!allHolders(m,e,f))return 0;
+  return toEUR(e)*m.filter(id=>f.includes(id)).length/f.length;
 }
 /* Zählt die Ausgabe in mindestens einer Sicht? (Tagesbudget-Einstellung ist dann sinnvoll) */
 const counts=(t,e)=>modes(t).some(m=>value(t,e,m)>0);
@@ -45,7 +49,7 @@ function settlement(t){
   for(const e of live(t.expenses)){
     const v=toEUR(e), parts=forIds(t,e), share=v/parts.length;
     if(e.payer==='J'){
-      const allM=m.length>0&&m.every(id=>parts.includes(id));
+      const allM=allHolders(m,e,parts);
       parts.forEach(id=>{if(allM&&m.includes(id))return;add('J',share);add(id,-share)});
       continue;
     }

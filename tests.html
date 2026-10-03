@@ -343,6 +343,16 @@ test('Zwei Personen, beide Inhaber: wie bisher',()=>{
   eq(tr(t),[['b','J',10],['b','a',6]]);
   eq(t.expenses.map(e=>RKCALC.counts(t,e)),[true,false,false],'Tagesbudget-Spalte wie bisher');
 });
+test('„Für alle“ von früher: später hinzugekommene Inhaberin zahlt nicht rückwirkend mit',()=>{
+  /* Ausgabe „für alle“ gespeichert, als es nur Anna gab; Ben kam danach dazu und ist Inhaber */
+  const t=baseTrip(); t.expenses.push(ex('alt',3000,10,{for:['a'],shared:true}),ex('neu',1500,10));
+  eq(RKCALC.members(t),['a','b']);
+  eq(vals(t,'joint'),[20,10],'zählt voll wie bisher'); eq(vals(t,'joint'),vals(t,'group'));
+  eq(tr(t),[],'neutral wie bisher');
+  /* Drei Personen, Inhaber a und b: früher „für alle“ = a und c, b kam später dazu */
+  const u=holderTrip(); u.expenses=[ex('alt',60,10,{cur:'EUR',rate:1,for:['a','c'],shared:true})];
+  eq(vals(u,'joint'),[30],'nur Annas Anteil'); eq(tr(u),[['c','J',30]]);
+});
 test('Gemeinsame Kasse aus: Sicht ganze Gruppe',()=>{
   const t=holderTrip(); t.joint={...t.joint,on:false};
   eq(RKCALC.viewsDiffer(t),false); eq(RKCALC.budgetMode(t),'group');
