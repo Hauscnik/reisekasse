@@ -15,6 +15,7 @@ function cell(v){
   const s=String(v??'');
   return /[";\n\r]/.test(s)||/^\s|\s$/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;
 }
+/* Tagesbudget steht bei allen Ausgaben, die in einer Budget-Sicht zählen (braucht calc.js) */
 function exportTrip(t){
   const live=a=>a.filter(x=>!x.deleted);
   const pName=id=>id==='J'?t.joint.name:((t.people.find(p=>p.id===id)||{}).name||'');
@@ -24,7 +25,7 @@ function exportTrip(t){
     const [y,m,d]=e.date.split('-');
     const eurV=e.cur==='EUR'?e.amount:e.amount/e.rate;
     return [e.id,`${d}.${m}.${y}`,dec(e.amount),e.cur,e.cur==='EUR'?'':dec(e.rate),eurV.toFixed(2).replace('.',','),cName(e.cat),e.note||'',
-      pName(e.payer),e.shared?'alle':e.for.map(pName).join(', '),e.method==='cash'?'Bar':'Karte',e.nights>0?e.nights:'',e.shared?(excl(e)?'nein':'ja'):'',''];
+      pName(e.payer),e.shared?'alle':e.for.map(pName).join(', '),e.method==='cash'?'Bar':'Karte',e.nights>0?e.nights:'',RKCALC.counts(t,e)?(excl(e)?'nein':'ja'):'',''];
   });
   /* BOM, damit Excel Umlaute richtig liest; Semikolon und Dezimalkomma wie im deutschen Excel */
   return '﻿'+[COLS,...rows].map(r=>r.map(cell).join(';')).join('\r\n')+'\r\n';

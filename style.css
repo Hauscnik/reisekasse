@@ -94,6 +94,12 @@ section.block h2{font-size:1.05rem;margin:0 0 10px;font-weight:700}
 .chips button{flex:none;border:1px solid var(--line);background:var(--surface);border-radius:99px;padding:7px 12px;font-size:.88rem;white-space:nowrap}
 .chips button[aria-pressed="true"]{background:var(--ink);color:var(--bg);border-color:var(--ink)}
 .ftitle{font-size:1.05rem;margin:0 0 10px}
+/* Umschalter der Budget-Sichten (Kontoinhaber / ganze Gruppe) */
+.viewseg{display:grid;grid-template-columns:1fr 1fr;gap:4px;background:var(--surface);border:1px solid var(--line);border-radius:99px;padding:3px;margin:0 0 12px}
+.viewseg button{border:0;background:none;border-radius:99px;padding:7px 10px;font-size:.88rem;font-weight:600;color:var(--muted);line-height:1.25}
+.viewseg button[aria-pressed="true"]{background:var(--ink);color:var(--bg)}
+.viewseg small{font-weight:400;opacity:.8}
+.jopts{margin-top:8px}
 .item.personal{opacity:.8}
 .linkish{border:0;background:none;padding:0;text-align:right;color:var(--muted);font-size:.9rem}
 .triprow{width:100%;display:flex;justify-content:space-between;align-items:center;gap:10px;border:0;background:none;text-align:left;padding:12px 0;border-bottom:1px solid var(--line)}
